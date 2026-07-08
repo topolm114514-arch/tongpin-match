@@ -87,8 +87,11 @@ def load_data(uploaded_file) -> pd.DataFrame:
     return df
 
 
-def find_overlaps(client: OpenAI, date: str, users: list) -> list:
-    """调用 LLM 返回两两重叠对"""
+def find_groups(client: OpenAI, date: str, users: list) -> list:
+    """
+    调用 LLM，直接按共同活动主题输出群组。
+    同一个人可以同时出现在多个主题群组中。
+    """
     if len(users) < 2:
         return []
 
@@ -102,16 +105,18 @@ def find_overlaps(client: OpenAI, date: str, users: list) -> list:
 
 {user_block}
 
-请找出其中存在生活轨迹重叠的用户对。
-"轨迹重叠"指：两人在同一天做了相似的事情、处于相似的场景、或有共同的行为模式。
-不要根据性格匹配，只根据实际行为/场景/时间是否重叠来判断。
+请按照"共同活动/场景"将用户聚合成群组。规则：
+1. 每个群组代表一种具体的共同轨迹（如：都去健身、都在咖啡馆、都看了电影等）
+2. 每个群组至少包含 2 名用户
+3. 同一个用户可以同时出现在多个群组（例如他既去了健身房又去了图书馆）
+4. 只根据实际行为/场景重叠判断，不要根据性格或情绪匹配
 
-对于每一对有重叠的用户，输出 JSON 数组：
+输出 JSON 数组，每个元素是一个群组：
 [
   {{
-    "user_a": "用户名",
-    "user_b": "用户名",
-    "overlap": "一句话描述重叠的具体轨迹"
+    "theme": "共同活动的简短标题（5字以内）",
+    "members": ["用户名1", "用户名2", ...],
+    "overlap": "一句话描述这些人共同做了什么"
   }}
 ]
 
@@ -139,86 +144,16 @@ def find_overlaps(client: OpenAI, date: str, users: list) -> list:
         return []
 
 
-def group_overlaps(pairs: list) -> list:
-    """
-    将两两重叠对通过连通分量算法聚合成群组。
-    同一组内只要有任意两人互相重叠，就归为一组。
-    """
-    # 按日期分别处理
-    date_pairs = defaultdict(list)
-    for p in pairs:
-        date_pairs[p["date"]].append(p)
-
-    groups = []
-
-    for date, pair_list in date_pairs.items():
-        # 构建邻接表 + 记录每对的重叠描述
-        adj = defaultdict(set)
-        overlap_map = {}
-
-        for p in pair_list:
-            a, b = p["user_a"], p["user_b"]
-            adj[a].add(b)
-            adj[b].add(a)
-            key = tuple(sorted([a, b]))
-            overlap_map[key] = p["overlap"]
-
-        # BFS 找连通分量
-        visited = set()
-        all_nodes = set(adj.keys())
-
-        for start in all_nodes:
-            if start in visited:
-                continue
-
-            # BFS
-            component = []
-            queue = [start]
-            while queue:
-                node = queue.pop(0)
-                if node in visited:
-                    continue
-                visited.add(node)
-                component.append(node)
-                for neighbor in adj[node]:
-                    if neighbor not in visited:
-                        queue.append(neighbor)
-
-            members = sorted(component)
-
-            # 收集组内所有边的重叠描述（去重）
-            seen_overlaps = set()
-            overlap_texts = []
-            for i, a in enumerate(members):
-                for b in members[i + 1:]:
-                    key = tuple(sorted([a, b]))
-                    if key in overlap_map:
-                        text = overlap_map[key]
-                        if text not in seen_overlaps:
-                            seen_overlaps.add(text)
-                            overlap_texts.append(text)
-
-            groups.append({
-                "日期": date,
-                "同频人数": len(members),
-                "群组成员": "、".join(members),
-                "共同轨迹": "；".join(overlap_texts),
-            })
-
-    # 按日期、人数降序排列
-    groups.sort(key=lambda g: (g["日期"], -g["同频人数"]))
-    return groups
-
-
 def to_excel_bytes(df: pd.DataFrame) -> bytes:
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine="openpyxl") as writer:
         df.to_excel(writer, index=False, sheet_name="同频群组")
         ws = writer.sheets["同频群组"]
         ws.column_dimensions["A"].width = 14
-        ws.column_dimensions["B"].width = 10
-        ws.column_dimensions["C"].width = 40
-        ws.column_dimensions["D"].width = 60
+        ws.column_dimensions["B"].width = 14
+        ws.column_dimensions["C"].width = 10
+        ws.column_dimensions["D"].width = 40
+        ws.column_dimensions["E"].width = 60
     return buf.getvalue()
 
 
@@ -239,7 +174,7 @@ if uploaded:
 
     if st.button("开始分析轨迹重叠", type="primary"):
         client = OpenAI(api_key=API_KEY, base_url=BASE_URL)
-        all_pairs = []
+        all_groups = []
 
         dates = df["date"].unique().tolist()
         progress = st.progress(0, text="分析中...")
@@ -249,17 +184,23 @@ if uploaded:
             users = group[["name", "text"]].to_dict("records")
             progress.progress((i + 1) / len(dates), text=f"正在分析 {date}（{len(users)} 人）")
 
-            pairs = find_overlaps(client, date, users)
-            all_pairs.extend(pairs)
+            groups = find_groups(client, date, users)
+            for g in groups:
+                all_groups.append({
+                    "日期": g.get("date", date),
+                    "活动主题": g.get("theme", ""),
+                    "同频人数": len(g.get("members", [])),
+                    "群组成员": "、".join(g.get("members", [])),
+                    "共同轨迹": g.get("overlap", ""),
+                })
 
         progress.empty()
 
-        if not all_pairs:
+        if not all_groups:
             st.info("未发现任何轨迹重叠。")
         else:
-            # 聚合成群组
-            groups = group_overlaps(all_pairs)
-            out_df = pd.DataFrame(groups, columns=["日期", "同频人数", "群组成员", "共同轨迹"])
+            out_df = pd.DataFrame(all_groups, columns=["日期", "活动主题", "同频人数", "群组成员", "共同轨迹"])
+            out_df = out_df.sort_values(["日期", "同频人数"], ascending=[True, False]).reset_index(drop=True)
 
             st.subheader(f"发现 {len(out_df)} 个同频群组")
             st.dataframe(out_df, use_container_width=True)
