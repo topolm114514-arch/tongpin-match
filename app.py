@@ -161,15 +161,67 @@ def format_members(members: list) -> str:
     return "、".join(parts)
 
 
-def to_excel_bytes(df: pd.DataFrame) -> bytes:
+def build_personal_messages(raw_groups: list, users: list) -> pd.DataFrame:
+    """为每个人生成私发文案：列出他/她和哪些人有哪些共同轨迹"""
+    name_to_date = {u["name"]: u["date"] for u in users}
+    person_items = defaultdict(list)
+
+    for g in raw_groups:
+        members = g.get("members", [])
+        # 兼容纯字符串 members
+        if members and isinstance(members[0], str):
+            members = [{"name": m, "date": name_to_date.get(m, "")} for m in members]
+
+        overlap = g.get("overlap", "")
+
+        for m in members:
+            others = [x for x in members if x["name"] != m["name"]]
+            if others:
+                person_items[m["name"]].append({
+                    "others": others,
+                    "overlap": overlap,
+                })
+
+    rows = []
+    for person in sorted(person_items.keys()):
+        lines = []
+        for item in person_items[person]:
+            count = len(item["others"])
+            lines.append(f"还有{count}个人和你一样{item['overlap']}")
+        rows.append({
+            "成员": person,
+            "私发文案": "\n".join(lines),
+        })
+
+    return pd.DataFrame(rows, columns=["成员", "私发文案"])
+
+
+def to_excel_bytes(groups_df: pd.DataFrame, personal_df: pd.DataFrame) -> bytes:
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine="openpyxl") as writer:
-        df.to_excel(writer, index=False, sheet_name="同频群组")
-        ws = writer.sheets["同频群组"]
-        ws.column_dimensions["A"].width = 14
-        ws.column_dimensions["B"].width = 10
-        ws.column_dimensions["C"].width = 45
-        ws.column_dimensions["D"].width = 60
+        # Sheet 1：群组总览
+        groups_df.to_excel(writer, index=False, sheet_name="同频群组")
+        ws1 = writer.sheets["同频群组"]
+        ws1.column_dimensions["A"].width = 14
+        ws1.column_dimensions["B"].width = 10
+        ws1.column_dimensions["C"].width = 45
+        ws1.column_dimensions["D"].width = 60
+
+        # Sheet 2：私发文案
+        personal_df.to_excel(writer, index=False, sheet_name="私发文案")
+        ws2 = writer.sheets["私发文案"]
+        ws2.column_dimensions["A"].width = 18
+        ws2.column_dimensions["B"].width = 70
+        # 自动换行
+        from openpyxl.styles import Alignment
+        for row in ws2.iter_rows(min_row=2):
+            for cell in row:
+                cell.alignment = Alignment(wrap_text=True, vertical="top")
+        # 行高自适应（估算）
+        for i, row_data in enumerate(personal_df["私发文案"], start=2):
+            line_count = str(row_data).count("\n") + 1
+            ws2.row_dimensions[i].height = max(18, line_count * 18)
+
     return buf.getvalue()
 
 
@@ -222,7 +274,12 @@ if uploaded:
             st.subheader(f"发现 {len(out_df)} 个同频群组")
             st.dataframe(out_df, use_container_width=True)
 
-            excel_bytes = to_excel_bytes(out_df)
+            personal_df = build_personal_messages(raw_groups, users)
+
+            st.subheader("私发文案预览")
+            st.dataframe(personal_df, use_container_width=True)
+
+            excel_bytes = to_excel_bytes(out_df, personal_df)
             all_dates = sorted(df["date"].unique().tolist())
             date_label = all_dates[0] if len(all_dates) == 1 else f"{all_dates[0]}至{all_dates[-1]}"
             st.download_button(
