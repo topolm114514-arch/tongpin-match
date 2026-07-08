@@ -64,7 +64,11 @@ def resolve_date(date_str: str, submit_dt: datetime) -> str:
 
 
 def load_data(uploaded_file) -> pd.DataFrame:
-    df = pd.read_csv(uploaded_file, encoding="utf-8-sig")
+    name = uploaded_file.name.lower()
+    if name.endswith(".xlsx") or name.endswith(".xls"):
+        df = pd.read_excel(uploaded_file)
+    else:
+        df = pd.read_csv(uploaded_file, encoding="utf-8-sig")
     df = df[[COL_SUBMIT, COL_NAME, COL_DATE, COL_TEXT]].copy()
     df.columns = ["submit_time", "name", "date_raw", "text"]
     df["name"]        = df["name"].astype(str).str.strip()
@@ -223,7 +227,7 @@ st.set_page_config(page_title="同频时记", page_icon="🔁", layout="centered
 st.title("同频时记 · 生活轨迹重叠分析")
 st.caption("上传问卷 CSV，自动发现同一天做了相似事情的人群")
 
-uploaded = st.file_uploader("上传问卷 CSV", type=["csv"])
+uploaded = st.file_uploader("上传问卷文件（CSV 或 Excel）", type=["csv", "xlsx", "xls"])
 
 if uploaded:
     df = load_data(uploaded)
