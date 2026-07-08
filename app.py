@@ -206,9 +206,14 @@ if uploaded:
             st.dataframe(out_df, use_container_width=True)
 
             excel_bytes = to_excel_bytes(out_df)
+            unique_dates = sorted(out_df["日期"].unique().tolist())
+            if len(unique_dates) == 1:
+                date_label = unique_dates[0]
+            else:
+                date_label = f"{unique_dates[0]}至{unique_dates[-1]}"
             st.download_button(
                 label="下载 Excel 报告",
                 data=excel_bytes,
-                file_name="同频群组报告.xlsx",
+                file_name=f"同频群组报告_{date_label}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             )
