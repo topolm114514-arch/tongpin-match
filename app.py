@@ -190,7 +190,7 @@ def build_personal_messages(raw_groups: list, users: list) -> pd.DataFrame:
             lines.append(f"还有{count}个人和你一样{item['overlap']}")
         rows.append({
             "成员": person,
-            "私发文案": "\n".join(lines),
+            "私发文案": "同学你好，昨天在我们的群组里，\n" + "\n".join(lines),
         })
 
     return pd.DataFrame(rows, columns=["成员", "私发文案"])
